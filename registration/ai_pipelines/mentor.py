@@ -1,13 +1,13 @@
 
 import os
-from cerebras.cloud.sdk import Cerebras
+from google import genai
+from google.genai import types
 
-client = Cerebras(
-    api_key=os.getenv("CEREBRAS_API_KEY")
+client = genai.Client(
+    api_key=os.getenv("GEMINI_API_KEY")
 )
 
-MODEL_NAME = "llama3.1-8b"
-
+MODEL_NAME = "gemini-2.5-flash"
 
 SYSTEM_PROMPT = """
 You are a physics mentor guiding a student step by step.
@@ -21,16 +21,15 @@ Rules:
 - Sound natural and collaborative.
 """
 
-
 def call_free_model(conversation):
-
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + conversation
-
-    response = client.chat.completions.create(
+    response = client.models.generate_content(
         model=MODEL_NAME,
-        messages=messages,
-        temperature=0.6,
-        max_tokens=400
+        contents=conversation,
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            temperature=0.6,
+            max_output_tokens=400,
+        ),
     )
 
-    return response.choices[0].message.content
+    return response.text
