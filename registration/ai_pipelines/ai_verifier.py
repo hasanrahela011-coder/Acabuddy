@@ -1,66 +1,91 @@
+
 import json
-from cerebras.cloud.sdk import Cerebras
 import os
+
 from dotenv import load_dotenv
+from google import genai
+from google.genai import types
 
 load_dotenv()
 
-SMART_MODEL = "llama3.1-8b"
-FAST_MODEL = "llama3.1-8b"
+# Gemini models
+SMART_MODEL = "gemini-2.5-flash"
+FAST_MODEL = "gemini-2.5-flash"
 
-client = Cerebras(api_key=os.getenv("CEREBRAS_API_KEY"))
+# Read the API key from the environment.
+api_key = os.getenv("GEMINI_API_KEY")
+
+# Avoid crashing Django during module import if the key is missing.
+client = genai.Client(api_key=api_key) if api_key else None
+
 
 def call_llm(prompt, system_prompt, model, json_mode=False):
     """
-    Wrapper for Cerebras API calls.
-    Handles JSON formatting and temperature settings automatically.
+    Wrapper for Gemini API calls.
+    Supports system instructions and JSON output.
     """
+    if client is None:
+        return "Error: GEMINI_API_KEY environment variable is not set."
+
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            # Use 0.0 for strict logic (Solver), 0.2 for creative formatting (Critic)
+        config = types.GenerateContentConfig(
+            system_instruction=system_prompt,
             temperature=0.2 if json_mode else 0.0,
-            # Cerebras specific parameter for JSON enforcement
-            response_format={"type": "json_object"} if json_mode else None
+            response_mime_type="application/json" if json_mode else "text/plain",
         )
-        return response.choices[0].message.content
+
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=config,
+        )
+
+        if response.text:
+            return response.text
+
+        return "Error: Gemini returned an empty response."
+
     except Exception as e:
         return f"Error: {str(e)}"
-    
-# --- THE SOLVER (Llama 3.3 70B) ---
-def solver(question, domain):
 
+
+# --- AGENT 1: THE SOLVER ---
+def solver(question, domain):
     system = f"""
-    You are an expert World-Class professional in {domain}.
-    Your task: Solve the user's problem, accurately and concisely, using modern best practices.
-    1. Rely ONLY on your internal knowledge.
-    2. Do NOT look at any provided answers (you are generating the ground truth).
-    3. Be concise and provide code/steps if applicable. If the question is subjective, provide the most generally accepted academic view.
+    You are an expert professional in {domain}.
+
+    Your task is to solve the user's problem accurately and concisely,
+    following modern best practices.
+
+    1. Rely on your internal knowledge.
+    2. Do not use any provided candidate answer to generate the reference.
+    3. Be concise and provide code or steps when applicable.
+    4. For subjective questions, give the generally accepted academic view.
     """
 
     return call_llm(question, system, SMART_MODEL)
 
-# --- THE COMPARATOR (Llama 3.3 70B) ---
-def comparator(question, reference, target):
 
+# --- AGENT 2: THE COMPARATOR ---
+def comparator(question, reference, target):
     system = """
-    You are a Meticulous Technical Auditor.
-    Compare the 'Reference Solution' vs 'Candidate Answer'.
-    Your goal is to identify if the candidate is functionally equivalent to the reference.
+    You are a meticulous technical auditor.
+
+    Compare the Reference Solution with the Candidate Answer.
+    Determine whether the candidate is functionally equivalent.
 
     INSTRUCTIONS:
-    1. If the Candidate Answer conveys the EXACT SAME meaning/logic as the Reference (even if wording differs), output: "NO SEMANTIC DIFFERENCES."
-    2. If there are distinct logical errors or missing facts, list them as bullet points.
-    3. Ignore tone, formatting, or variable naming.
-    4. If the Candidate Answer uses a DIFFERENT but VALID approach, note that explicitly.
+    1. If both convey the same meaning and logic, output:
+       NO SEMANTIC DIFFERENCES.
+    2. If there are logical errors or missing facts, list them as bullets.
+    3. Ignore tone, formatting, and variable naming.
+    4. If the candidate uses a different but valid approach,
+       explicitly identify it as valid.
     """
 
     user_input = f"""
-    [QUESTION]: {question}
+    [QUESTION]:
+    {question}
 
     [REFERENCE SOLUTION]:
     {reference}
@@ -71,68 +96,116 @@ def comparator(question, reference, target):
 
     return call_llm(user_input, system, SMART_MODEL)
 
-# --- AGENT 3: THE CRITIC (Llama 3.1 8B) ---
+
+# --- AGENT 3: THE CRITIC ---
 def critic(question, comparison, target):
+    system = """
+    You are an expert domain grader.
 
-    system = """ You are an Expert Domain Grader. Rate the 'Candidate Answer' based strictly on the 'Audit Report' (Reference Answer).
+    Score the Candidate Answer based on factual accuracy and the Audit Report.
 
-      INSTRUCTIONS:
-      1. Prioritize MEANING over wording. If the Candidate Answer conveys the correct scientific concept and outcome, it should be scored highly, even if phrased differently.
-      2. Ignore minor stylistic differences or extra context unless it contradicts the truth.
-      3. Identify the "Core Facts" in the Reference Key.
-      4. Check if those Core Facts exist in the Candidate Answer.
-      5. Ignore grammar, tone, or sentence structure unless it confuses the meaning.
-      6. Use the following CONTINUOUS SCALE (0.0 to 1.0):
+    INSTRUCTIONS:
+    1. Prioritize meaning over wording.
+    2. Ignore stylistic differences unless they change the meaning.
+    3. Identify the core facts in the reference solution.
+    4. Check whether those facts appear in the candidate answer.
 
-      ANCHORS:
-      - 1.0 (Perfect): The Audit Report states "NO SEMANTIC DIFFERENCES" or confirms the answer is valid/equivalent.
-      - 0.8 (Verified): The answer is correct but the Audit Report highlights minor omissions or lack of specific terminology that does not affect the correctness.
-      - 0.5 (Partial): Audit Report lists missing core concepts.
-      - 0.0 (Wrong): Dangerous or Incorrect.
+    SCORING:
+    - 1.0: Correct and semantically equivalent.
+    - 0.8: Correct with minor omissions.
+    - 0.5: Partially correct; core concepts are missing.
+    - 0.0: Incorrect or dangerously wrong.
 
-      OUTPUT FORMAT (JSON ONLY):
-      {
-        "score": <float>,
-        "reasoning": "<concise explanation focusing on factual accuracy>"
-      }
-      """
-
-    user_input = f"""
-    [QUESTION]: {question}
-    [CANDIDATE ANSWER]: {target}
-    [AUDIT REPORT]: {comparison}
+    Return ONLY a valid JSON object with this structure:
+    {
+      "score": 0.0,
+      "reasoning": "Concise explanation of factual accuracy"
+    }
     """
 
-    # Force valid JSON output
-    return call_llm(user_input, system, FAST_MODEL, json_mode=True)
+    user_input = f"""
+    [QUESTION]:
+    {question}
+
+    [CANDIDATE ANSWER]:
+    {target}
+
+    [AUDIT REPORT]:
+    {comparison}
+    """
+
+    return call_llm(
+        user_input,
+        system,
+        FAST_MODEL,
+        json_mode=True,
+    )
+
 
 # --- MAIN WORKFLOW ---
 def verify_answer(question: str, answer_text: str, domain: str):
-
-    # Step 1: Solver
+    # Step 1: Generate a reference solution.
     reference_sol = solver(question, domain)
 
-    # Step 2: Comparator (Audit)
-    diffs = comparator(question, reference_sol, answer_text)
-
-    # Step 3: Critic (Score)
-    verdict_json = critic(question, diffs, answer_text)
-
-    try:
-        result = json.loads(verdict_json)
-        return {
-            "score": float(result.get("score", 0.0)),
-            "reasoning": result.get("reasoning", ""),
-            "audit": diffs,
-            "verified": result["score"] >= 0.6
-        }
-
-    except json.JSONDecodeError:
+    # Stop if the reference generation failed.
+    if reference_sol.startswith("Error:"):
         return {
             "score": 0.0,
-            "reasoning": "AI verification failed due to malformed response.",
-            "audit": verdict_json,
-            "verified": 0
+            "reasoning": reference_sol,
+            "audit": "",
+            "verified": False,
         }
 
+    # Step 2: Compare the reference with the candidate.
+    diffs = comparator(question, reference_sol, answer_text)
+
+    if diffs.startswith("Error:"):
+        return {
+            "score": 0.0,
+            "reasoning": diffs,
+            "audit": "",
+            "verified": False,
+        }
+
+    # Step 3: Grade the candidate.
+    verdict_json = critic(question, diffs, answer_text)
+
+    if verdict_json.startswith("Error:"):
+        return {
+            "score": 0.0,
+            "reasoning": verdict_json,
+            "audit": diffs,
+            "verified": False,
+        }
+
+    try:
+        # Handle JSON enclosed in Markdown code fences, if returned.
+        cleaned = verdict_json.strip()
+
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[1]
+            if cleaned.rstrip().endswith("```"):
+                cleaned = cleaned.rstrip()[:-3].strip()
+
+        result = json.loads(cleaned)
+        score = float(result["score"])
+
+        # Validate the returned score.
+        if not 0.0 <= score <= 1.0:
+            raise ValueError("Score must be between 0.0 and 1.0.")
+
+        return {
+            "score": score,
+            "reasoning": str(result.get("reasoning", "")),
+            "audit": diffs,
+            "verified": score >= 0.6,
+        }
+
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+        return {
+            "score": 0.0,
+            "reasoning": f"AI verification failed: {str(e)}",
+            "audit": verdict_json,
+            "verified": False,
+        }
 
