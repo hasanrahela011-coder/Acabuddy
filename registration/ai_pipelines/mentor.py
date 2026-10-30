@@ -12,7 +12,7 @@ from google.genai import types
 
 MODEL_NAME = "gemini-2.5-flash"
 
-api_key = os.getenv("GEMINI_API_KEY")
+api_key = os.getenv("GEMINI_API_KEY_MENTOR")
 
 # Initialize the client only when the API key exists.
 # This prevents Django from crashing during module import.
