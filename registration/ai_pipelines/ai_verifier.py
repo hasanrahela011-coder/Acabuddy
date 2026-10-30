@@ -13,7 +13,7 @@ SMART_MODEL = "gemini-2.5-flash"
 FAST_MODEL = "gemini-2.5-flash"
 
 # Read the API key from the environment.
-api_key = os.getenv("GEMINI_API_KEY")
+api_key = os.getenv("GEMINI_API_KEY_VERIFIER")
 
 # Avoid crashing Django during module import if the key is missing.
 client = genai.Client(api_key=api_key) if api_key else None
