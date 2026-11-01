@@ -70,7 +70,7 @@ WSGI_APPLICATION = "registration.wsgi.application"
 
 DATABASES = {
     'default': dj_database_url.config(
-        default=os.environ.get("DATABASE_URL"),
+        default=os.environ.get("DATABASE_URL_POOLED"),
         conn_max_age=600,
         ssl_require=True
     )
